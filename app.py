@@ -202,28 +202,64 @@ def validate_inputs(lat, lon, ece, water_ec):
 @lru_cache(maxsize=32)
 def get_elevation_cached(lat, lon):
 
-    response = requests.get(
-        ELEVATION_URL,
-        params={
-            "latitude": lat,
-            "longitude": lon
-        },
-        timeout=30
+    last_error = None
+
+    for attempt in range(4):
+        try:
+            response = requests.get(
+                ELEVATION_URL,
+                params={
+                    "latitude": lat,
+                    "longitude": lon
+                },
+                timeout=30
+            )
+
+            if response.status_code == 429:
+                retry_after = response.headers.get("Retry-After")
+
+                try:
+                    wait_seconds = (
+                        float(retry_after)
+                        if retry_after
+                        else 2 ** attempt
+                    )
+                except (TypeError, ValueError):
+                    wait_seconds = 2 ** attempt
+
+                import time
+                time.sleep(min(max(wait_seconds, 1), 12))
+
+                last_error = requests.HTTPError(
+                    "Open-Meteo rate limit reached (HTTP 429).",
+                    response=response
+                )
+                continue
+
+            response.raise_for_status()
+
+            values = response.json().get("elevation", [])
+
+            if not values or values[0] is None:
+                raise ValueError("Elevation data is unavailable.")
+
+            elevation = float(values[0])
+
+            if not np.isfinite(elevation):
+                raise ValueError("Invalid elevation value.")
+
+            return elevation
+
+        except requests.RequestException as error:
+            last_error = error
+
+            if attempt < 3 and getattr(error.response, "status_code", None) != 429:
+                import time
+                time.sleep(2 ** attempt)
+
+    raise last_error or ValueError(
+        "Elevation data is unavailable after retries."
     )
-
-    response.raise_for_status()
-
-    values = response.json().get("elevation", [])
-
-    if not values or values[0] is None:
-        raise ValueError("Elevation data is unavailable.")
-
-    elevation = float(values[0])
-
-    if not np.isfinite(elevation):
-        raise ValueError("Invalid elevation value.")
-
-    return elevation
 
 
 def get_elevation(lat, lon):
