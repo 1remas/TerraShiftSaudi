@@ -202,7 +202,7 @@ def validate_inputs(lat, lon, ece, water_ec):
 @lru_cache(maxsize=32)
 def get_elevation_cached(lat, lon):
 
-    last_error = None
+    import time
 
     for attempt in range(4):
         try:
@@ -216,24 +216,8 @@ def get_elevation_cached(lat, lon):
             )
 
             if response.status_code == 429:
-                retry_after = response.headers.get("Retry-After")
-
-                try:
-                    wait_seconds = (
-                        float(retry_after)
-                        if retry_after
-                        else 2 ** attempt
-                    )
-                except (TypeError, ValueError):
-                    wait_seconds = 2 ** attempt
-
-                import time
-                time.sleep(min(max(wait_seconds, 1), 12))
-
-                last_error = requests.HTTPError(
-                    "Open-Meteo rate limit reached (HTTP 429).",
-                    response=response
-                )
+                wait = 2 ** (attempt + 1)
+                time.sleep(wait)
                 continue
 
             response.raise_for_status()
@@ -241,25 +225,23 @@ def get_elevation_cached(lat, lon):
             values = response.json().get("elevation", [])
 
             if not values or values[0] is None:
-                raise ValueError("Elevation data is unavailable.")
+                continue
 
             elevation = float(values[0])
 
-            if not np.isfinite(elevation):
-                raise ValueError("Invalid elevation value.")
+            if np.isfinite(elevation):
+                return elevation
 
-            return elevation
+        except (
+            requests.RequestException,
+            ValueError,
+            TypeError
+        ):
+            time.sleep(2 ** attempt)
 
-        except requests.RequestException as error:
-            last_error = error
-
-            if attempt < 3 and getattr(error.response, "status_code", None) != 429:
-                import time
-                time.sleep(2 ** attempt)
-
-    raise last_error or ValueError(
-        "Elevation data is unavailable after retries."
-    )
+    # Fallback: allow NASA POWER analysis to continue.
+    # This is an assumed elevation, not a measured value.
+    return 0.0
 
 
 def get_elevation(lat, lon):
